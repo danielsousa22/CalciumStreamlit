@@ -48,7 +48,7 @@ if step == "1. Upload & Smooth":
 
         # Smoothing controls
         st.subheader("Smoothing Parameters")
-        window = st.number_input("Window length (odd)", min_value=3, max_value=101, value=15, step=2)
+        window = st.number_input("Window length (odd)", min_value=3, max_value=101, value=25, step=2)
         poly = st.number_input("Polynomial order", min_value=1, max_value=5, value=3, step=1)
         if st.button("Update Smoothed Signal"):
             smooth = savgol_filter(df['intensity'], window_length=window, polyorder=poly)
