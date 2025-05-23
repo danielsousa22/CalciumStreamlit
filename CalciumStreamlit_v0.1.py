@@ -94,7 +94,7 @@ elif step == "2. Peak Detection":
                 sel = sel[:-1]
             st.session_state.peaks = sel
             # Calculate average BPM
-             times = sel / FRAME_RATE
+            times = sel / FRAME_RATE
             if len(times) > 1:
                 intervals = np.diff(times)
                 st.session_state.avg_bpm = 60 / intervals.mean()
