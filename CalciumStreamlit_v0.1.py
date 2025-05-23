@@ -21,6 +21,10 @@ if 'peaks' not in st.session_state:
     st.session_state.peaks = []
 if 'avg_bpm' not in st.session_state:
     st.session_state.avg_bpm = None
+if 'mean_pp_interval' not in st.session_state:
+    st.session_state.mean_pp_interval = None
+if 'std_pp_interval' not in st.session_state:
+    st.session_state.std_pp_interval = None
 if 'analysis_window' not in st.session_state:
     st.session_state.analysis_window = None    
 
@@ -90,9 +94,16 @@ elif step == "2. Peak Detection":
                 sel = sel[:-1]
             st.session_state.peaks = sel
             # Calculate average BPM
-            times = sel / FRAME_RATE
-            bpm_vals = 60 / np.diff(times) if len(times)>1 else np.array([])
-            st.session_state.avg_bpm = bpm_vals.mean() if len(bpm_vals)>0 else 0
+             times = sel / FRAME_RATE
+            if len(times) > 1:
+                intervals = np.diff(times)
+                st.session_state.avg_bpm = 60 / intervals.mean()
+                st.session_state.mean_pp_interval = intervals.mean()
+                st.session_state.std_pp_interval = intervals.std()
+            else:
+                st.session_state.avg_bpm = 0
+                st.session_state.mean_pp_interval = 0
+                st.session_state.std_pp_interval = 0
 
             # Plot with peaks
             fig4 = go.Figure()
@@ -113,6 +124,8 @@ else:
     smooth = st.session_state.smoothed
     peaks = st.session_state.peaks
     avg_bpm = st.session_state.avg_bpm
+    mean_pp = st.session_state.mean_pp_interval
+    std_pp = st.session_state.std_pp_interval
     if df is None or smooth is None or len(peaks)==0:
         st.warning("Complete Steps 1 & 2, and detect at least one peak, before calculating features.")
     else:
@@ -123,8 +136,8 @@ else:
         peak_time = df['frame'].iloc[peak_frame]/FRAME_RATE
 
         # Prepare analysis window defaults
-        default_start = max(0.0, peak_time - 0.2)
-        default_end = peak_time + 0.5
+        default_start = max(0.0, peak_time - 0.5)
+        default_end = peak_time + 0.8
         times_full = df['frame']/FRAME_RATE
         min_time = float(times_full.min())
         max_time = float(times_full.max())
@@ -171,7 +184,9 @@ else:
             "amplitude": [amplitude],
             "time_to_peak": [time_to_peak],
             **{k: [v] for k, v in decay_stats.items()},
-            "average_bpm": [avg_bpm]
+            "average_bpm": [avg_bpm],
+            "mean_peak_to_peak_s": [mean_pp],
+            "std_peak_to_peak_s": [std_pp]
         })
         st.subheader("Calculated Features")
         st.table(result_df)
