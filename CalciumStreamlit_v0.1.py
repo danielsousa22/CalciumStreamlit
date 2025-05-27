@@ -10,7 +10,7 @@ FRAME_RATE = 500  # frames per second
 
 # Helper: compute features for one file
 # Helper: compute features and optional segment for one file
-@st.experimental_memo
+@st.cache_data(show_spinner=False)
 def compute_features_and_segment(df, smooth, peaks, start_s, end_s, extract_segment):
     times = df['frame'] / FRAME_RATE
     # intervals & BPM
