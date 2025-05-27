@@ -9,8 +9,9 @@ st.set_page_config(page_title="Calcium Transient Analyzer", layout="wide")
 FRAME_RATE = 500  # frames per second
 
 # Helper: compute features for one file
+# Helper: compute features and optional segment for one file
 @st.experimental_memo
-def compute_features(df, smooth, peaks, start_s, end_s):
+def compute_features_and_segment(df, smooth, peaks, start_s, end_s, extract_segment):
     times = df['frame'] / FRAME_RATE
     # intervals & BPM
     if len(peaks) > 1:
@@ -20,38 +21,56 @@ def compute_features(df, smooth, peaks, start_s, end_s):
         std_pp = intervals.std()
     else:
         avg_bpm = mean_pp = std_pp = np.nan
-    # choose a central peak for window default if not batching
-    # analysis window
-    start_idx = np.searchsorted(times, start_s)
-    end_idx = np.searchsorted(times, end_s)
-    seg_times = times.iloc[start_idx:end_idx].values
-    seg_signal = smooth[start_idx:end_idx]
-    # baseline & peak
-    peak_idx = peaks[0] if len(peaks)>0 else start_idx
-    peak_time = df['frame'].iloc[peak_idx] / FRAME_RATE
-    baseline = np.percentile(seg_signal[seg_times<=peak_time], 10)
-    peak_val = smooth[peak_idx]
-    amplitude = peak_val - baseline
-    time_to_peak = peak_time - start_s
-    # decay metrics
-    decay_stats = {}
-    for pct in [0.9, 0.5, 0.1]:
-        thresh = baseline + pct * amplitude
-        post = seg_signal[seg_times>=peak_time]
-        post_t = seg_times[seg_times>=peak_time]
-        idxs = np.where(post <= thresh)[0]
-        decay_stats[f'decay_to_{int(pct*100)}%'] = (post_t[idxs[0]] - peak_time) if idxs.size else np.nan
-    # pack features
-    data = {
-        'baseline': baseline,
-        'amplitude': amplitude,
-        'time_to_peak': time_to_peak,
+
+    # Feature pack
+    feat = {
         'average_bpm': avg_bpm,
         'mean_peak_to_peak_s': mean_pp,
         'std_peak_to_peak_s': std_pp,
-        **decay_stats
     }
-    return pd.DataFrame([data])
+
+    segment_df = pd.DataFrame()
+    if extract_segment and len(peaks) > 0:
+        # choose first peak and window
+        peak_idx = peaks[0]
+        # analysis window bounds
+        start_idx = np.searchsorted(times, start_s)
+        end_idx = np.searchsorted(times, end_s)
+        seg_times = times.iloc[start_idx:end_idx].values
+        seg_signal = smooth[start_idx:end_idx]
+        # baseline & amplitude
+        peak_time = df['frame'].iloc[peak_idx] / FRAME_RATE
+        baseline = np.percentile(seg_signal[seg_times<=peak_time], 10)
+        peak_val = smooth[peak_idx]
+        amplitude = peak_val - baseline
+        time_to_peak = peak_time - start_s
+        feat.update({
+            'baseline': baseline,
+            'amplitude': amplitude,
+            'time_to_peak': time_to_peak
+        })
+        # decay metrics
+        for pct in [0.9, 0.5, 0.1]:
+            thresh = baseline + pct * amplitude
+            post = seg_signal[seg_times>=peak_time]
+            post_t = seg_times[seg_times>=peak_time]
+            idxs = np.where(post <= thresh)[0]
+            feat[f'decay_to_{int(pct*100)}%'] = (post_t[idxs[0]]-peak_time) if idxs.size else np.nan
+        # build segment dataframe
+        segment_df = pd.DataFrame({
+            'time_s': seg_times,
+            'intensity': seg_signal
+        })
+    else:
+        # if not extracting, fill feature fields with NaN
+        feat.update({
+            'baseline': np.nan,
+            'amplitude': np.nan,
+            'time_to_peak': np.nan,
+            **{f'decay_to_{int(p*100)}%': np.nan for p in [0.9,0.5,0.1]}
+        })
+
+    return pd.DataFrame([feat]), segment_df
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
@@ -250,6 +269,7 @@ else:
         st.download_button("Download segment data CSV", csv_segment, "segmented_peak_data.csv", "text/csv")
         img_bytes = fig5.to_image(format="png")
         st.download_button("Download segment plot PNG", img_bytes, "segmented_peak_plot.png", "image/png")
+
 # Step 4: Batch Analysis
 if step == "4. Batch Analysis":
     st.header("Step 4: Batch Analysis")
@@ -257,40 +277,49 @@ if step == "4. Batch Analysis":
         "Upload CSV files for batch", type='csv', accept_multiple_files=True
     )
     manifest = st.file_uploader(
-        "Upload manifest CSV (filename,height,distance,start_s,end_s)",
+        "Upload manifest CSV with columns: filename,height,distance,start_s,end_s,extract_segment",
         type='csv', key='manifest'
     )
     if st.button("Run batch"):
         if not files or not manifest:
             st.error("Please upload both data files and a manifest.")
-        else:
-            params = pd.read_csv(manifest)
-            results = []
-            for f in files:
-                df = pd.read_csv(f, header=None, names=['frame','intensity'])
-                df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
-                # smoothing: use same default or add to manifest if desired
-                smooth = savgol_filter(df['intensity'], window_length=25, polyorder=3)
-                # find parameters for this file
-                row = params[params['filename']==f.name]
-                if row.empty:
-                    st.warning(f"No params for {f.name}, skipping.")
-                    continue
-                h = float(row['height'])
-                d = int(row['distance'])
-                start_s = float(row['start_s'])
-                end_s = float(row['end_s'])
-                peaks, _ = find_peaks(smooth, height=h, distance=d)
-                feat_df = compute_features(df, smooth, peaks, start_s, end_s)
-                feat_df['filename'] = f.name
-                results.append(feat_df)
-            if results:
-                batch_df = pd.concat(results, ignore_index=True)
-                st.subheader("Batch Results")
-                st.dataframe(batch_df)
-                csv = batch_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download batch results CSV", csv, "batch_results.csv", "text/csv"
-                )
-            else:
-                st.info("No results to show.")
+            st.stop()
+        params = pd.read_csv(manifest)
+        feature_list = []
+        segment_list = []
+        for f in files:
+            df = pd.read_csv(f, header=None, names=['frame','intensity'])
+            df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
+            smooth = savgol_filter(df['intensity'], window_length=15, polyorder=3)
+            row = params.loc[params['filename']==f.name]
+            if row.empty:
+                st.warning(f"Skipping {f.name}: no manifest entry.")
+                continue
+            h = float(row['height'])
+            d = int(row['distance'])
+            start_s = float(row['start_s'])
+            end_s = float(row['end_s'])
+            extract = bool(row['extract_segment'])
+
+            peaks, _ = find_peaks(smooth, height=h, distance=d)
+            feat_df, seg_df = compute_features_and_segment(df, smooth, peaks, start_s, end_s, extract)
+            feat_df['filename'] = f.name
+            feature_list.append(feat_df)
+            if extract and not seg_df.empty:
+                seg_df['filename'] = f.name
+                segment_list.append(seg_df)
+
+        if feature_list:
+            batch_features = pd.concat(feature_list, ignore_index=True)
+            st.subheader("Batch Feature Results")
+            st.dataframe(batch_features)
+            csv_feat = batch_features.to_csv(index=False).encode('utf-8')
+            st.download_button("Download batch features CSV", csv_feat, "batch_features.csv", "text/csv")
+        if segment_list:
+            batch_segments = pd.concat(segment_list, ignore_index=True)
+            st.subheader("Extracted Peak Segments")
+            st.dataframe(batch_segments)
+            csv_seg = batch_segments.to_csv(index=False).encode('utf-8')
+            st.download_button("Download extracted segments CSV", csv_seg, "extracted_segments.csv", "text/csv")
+        if not feature_list:
+            st.info("No results to display. Check your manifest and uploads.")
