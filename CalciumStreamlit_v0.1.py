@@ -8,26 +8,64 @@ st.set_page_config(page_title="Calcium Transient Analyzer", layout="wide")
 # Constants
 FRAME_RATE = 500  # frames per second
 
-# Sidebar: navigation
+# Helper: compute features for one file
+@st.experimental_memo
+def compute_features(df, smooth, peaks, start_s, end_s):
+    times = df['frame'] / FRAME_RATE
+    # intervals & BPM
+    if len(peaks) > 1:
+        intervals = np.diff(peaks / FRAME_RATE)
+        avg_bpm = 60 / intervals.mean()
+        mean_pp = intervals.mean()
+        std_pp = intervals.std()
+    else:
+        avg_bpm = mean_pp = std_pp = np.nan
+    # choose a central peak for window default if not batching
+    # analysis window
+    start_idx = np.searchsorted(times, start_s)
+    end_idx = np.searchsorted(times, end_s)
+    seg_times = times.iloc[start_idx:end_idx].values
+    seg_signal = smooth[start_idx:end_idx]
+    # baseline & peak
+    peak_idx = peaks[0] if len(peaks)>0 else start_idx
+    peak_time = df['frame'].iloc[peak_idx] / FRAME_RATE
+    baseline = np.percentile(seg_signal[seg_times<=peak_time], 10)
+    peak_val = smooth[peak_idx]
+    amplitude = peak_val - baseline
+    time_to_peak = peak_time - start_s
+    # decay metrics
+    decay_stats = {}
+    for pct in [0.9, 0.5, 0.1]:
+        thresh = baseline + pct * amplitude
+        post = seg_signal[seg_times>=peak_time]
+        post_t = seg_times[seg_times>=peak_time]
+        idxs = np.where(post <= thresh)[0]
+        decay_stats[f'decay_to_{int(pct*100)}%'] = (post_t[idxs[0]] - peak_time) if idxs.size else np.nan
+    # pack features
+    data = {
+        'baseline': baseline,
+        'amplitude': amplitude,
+        'time_to_peak': time_to_peak,
+        'average_bpm': avg_bpm,
+        'mean_peak_to_peak_s': mean_pp,
+        'std_peak_to_peak_s': std_pp,
+        **decay_stats
+    }
+    return pd.DataFrame([data])
+
+# Sidebar navigation
 st.sidebar.title("Navigation")
-step = st.sidebar.radio("Go to step:", ["1. Upload & Smooth", "2. Peak Detection", "3. Feature Calculation"])
+step = st.sidebar.radio("Go to step:", [
+    "1. Upload & Smooth",
+    "2. Peak Detection",
+    "3. Feature Calculation",
+    "4. Batch Analysis"
+])
 
-# Initialize session state
-if 'raw_df' not in st.session_state:
-    st.session_state.raw_df = None
-if 'smoothed' not in st.session_state:
-    st.session_state.smoothed = None
-if 'peaks' not in st.session_state:
-    st.session_state.peaks = []
-if 'avg_bpm' not in st.session_state:
-    st.session_state.avg_bpm = None
-if 'mean_pp_interval' not in st.session_state:
-    st.session_state.mean_pp_interval = None
-if 'std_pp_interval' not in st.session_state:
-    st.session_state.std_pp_interval = None
-if 'analysis_window' not in st.session_state:
-    st.session_state.analysis_window = None    
-
+# Session state init
+for key in ['raw_df','smoothed','peaks','avg_bpm','mean_pp_interval','std_pp_interval','analysis_window']:
+    if key not in st.session_state:
+        st.session_state[key] = None
 # Step 1: Upload & Smooth
 if step == "1. Upload & Smooth":
     st.header("Step 1: Upload and Smooth Signal")
@@ -212,3 +250,47 @@ else:
         st.download_button("Download segment data CSV", csv_segment, "segmented_peak_data.csv", "text/csv")
         img_bytes = fig5.to_image(format="png")
         st.download_button("Download segment plot PNG", img_bytes, "segmented_peak_plot.png", "image/png")
+# Step 4: Batch Analysis
+if step == "4. Batch Analysis":
+    st.header("Step 4: Batch Analysis")
+    files = st.file_uploader(
+        "Upload CSV files for batch", type='csv', accept_multiple_files=True
+    )
+    manifest = st.file_uploader(
+        "Upload manifest CSV (filename,height,distance,start_s,end_s)",
+        type='csv', key='manifest'
+    )
+    if st.button("Run batch"):
+        if not files or not manifest:
+            st.error("Please upload both data files and a manifest.")
+        else:
+            params = pd.read_csv(manifest)
+            results = []
+            for f in files:
+                df = pd.read_csv(f, header=None, names=['frame','intensity'])
+                df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
+                # smoothing: use same default or add to manifest if desired
+                smooth = savgol_filter(df['intensity'], window_length=25, polyorder=3)
+                # find parameters for this file
+                row = params[params['filename']==f.name]
+                if row.empty:
+                    st.warning(f"No params for {f.name}, skipping.")
+                    continue
+                h = float(row['height'])
+                d = int(row['distance'])
+                start_s = float(row['start_s'])
+                end_s = float(row['end_s'])
+                peaks, _ = find_peaks(smooth, height=h, distance=d)
+                feat_df = compute_features(df, smooth, peaks, start_s, end_s)
+                feat_df['filename'] = f.name
+                results.append(feat_df)
+            if results:
+                batch_df = pd.concat(results, ignore_index=True)
+                st.subheader("Batch Results")
+                st.dataframe(batch_df)
+                csv = batch_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Download batch results CSV", csv, "batch_results.csv", "text/csv"
+                )
+            else:
+                st.info("No results to show.")
