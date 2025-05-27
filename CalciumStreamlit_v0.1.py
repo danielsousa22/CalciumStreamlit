@@ -300,8 +300,18 @@ if step == "4. Batch Analysis":
             start_s = float(row['start_s'])
             end_s = float(row['end_s'])
             extract = bool(row['extract_segment'])
-
+            skip_first   = bool(row['skip_first'])
+            skip_last    = bool(row['skip_last'])
+            
             peaks, _ = find_peaks(smooth, height=h, distance=d)
+            # apply skip flags
+            if skip_first and peaks.size > 0:
+                peaks = peaks[1:]
+            if skip_last and peaks.size > 0:
+                peaks = peaks[:-1]
+
+            # now compute features/segment from the (possibly trimmed) peaks
+            
             feat_df, seg_df = compute_features_and_segment(df, smooth, peaks, start_s, end_s, extract)
             feat_df['filename'] = f.name
             feature_list.append(feat_df)
