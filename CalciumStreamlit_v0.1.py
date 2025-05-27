@@ -290,7 +290,8 @@ if step == "4. Batch Analysis":
         for f in files:
             df = pd.read_csv(f, header=None, names=['frame','intensity'])
             df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
-            smooth = savgol_filter(df['intensity'], window_length=15, polyorder=3)
+            df['intensity'] = pd.to_numeric(df['intensity'], errors='coerce')
+            smooth = savgol_filter(df['intensity'], window_length=25, polyorder=3)
             row = params.loc[params['filename']==f.name]
             if row.empty:
                 st.warning(f"Skipping {f.name}: no manifest entry.")
